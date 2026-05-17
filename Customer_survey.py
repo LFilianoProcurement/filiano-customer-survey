@@ -1,7 +1,25 @@
+# ============================================================
+# Customer Experience Survey
+# Project 4b — Procurement Intelligence Suite
+#
+# Copyright (c) 2026 Louis T. Filiano, MBA
+# All Rights Reserved.
+#
+# This software and its source code are proprietary and
+# confidential. Unauthorized copying, distribution, or use
+# of this file, via any medium, is strictly prohibited.
+#
+# Author:  Louis T. Filiano, MBA
+# Contact: filianowork@gmail.com | (214) 907-3294
+# GitHub:  github.com/LFilianoProcurement
+# ============================================================
+
 import streamlit as st
 import json
 import datetime
 import os
+import gspread
+from google.oauth2.service_account import Credentials
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -140,20 +158,34 @@ SCORE_LABELS = {1: "Poor", 2: "Below Average", 3: "Average", 4: "Good", 5: "Exce
 
 
 
-RESPONSES_FILE = "survey_responses.json"
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "")
+SERVICE_ACCOUNT_FILE = "service_account.json"
 
-def load_all_responses():
-    """Load responses from shared JSON file"""
+def get_sheet():
+    """Connect to Google Sheet — supports local file and Streamlit Cloud secrets"""
     try:
-        if os.path.exists(RESPONSES_FILE):
-            with open(RESPONSES_FILE, "r") as f:
-                return json.load(f)
-    except:
-        pass
-    return []
+        import streamlit as st
+        scopes = ["https://www.googleapis.com/auth/spreadsheets",
+                  "https://www.googleapis.com/auth/drive"]
+        # Try Streamlit secrets first (for cloud deployment)
+        try:
+            service_account_info = dict(st.secrets["gcp_service_account"])
+            creds = Credentials.from_service_account_info(service_account_info, scopes=scopes)
+        except:
+            # Fall back to local JSON file
+            creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scopes)
+        client = gspread.authorize(creds)
+        sheet_id = os.getenv("GOOGLE_SHEET_ID", "")
+        try:
+            sheet_id = st.secrets.get("GOOGLE_SHEET_ID", sheet_id)
+        except:
+            pass
+        return client.open_by_key(sheet_id).sheet1
+    except Exception as e:
+        return None
 
 def save_response(supplier, customer_name, customer_company, scores, comments, overall_avg):
-    """Save response to shared JSON file"""
+    """Save response to Google Sheet"""
     response = {
         "id": datetime.datetime.now().strftime("%Y%m%d%H%M%S%f"),
         "submitted_at": datetime.datetime.now().isoformat(),
@@ -162,13 +194,30 @@ def save_response(supplier, customer_name, customer_company, scores, comments, o
         "customer_company": customer_company,
         "overall_avg": overall_avg,
         "scores": scores,
-        "comments": comments
+        "comments": comments,
+        "source": "customer"
     }
-    existing = load_all_responses()
-    existing.append(response)
     try:
-        with open(RESPONSES_FILE, "w") as f:
-            json.dump(existing, f, indent=2)
+        sheet = get_sheet()
+        if sheet:
+            # Add header row if sheet is empty
+            if sheet.row_count == 0 or not sheet.get_all_values():
+                sheet.append_row(["id", "submitted_at", "supplier", "customer_name",
+                                   "customer_company", "overall_avg", "scores_json",
+                                   "comments_json", "source"])
+            sheet.append_row([
+                response["id"],
+                response["submitted_at"],
+                supplier,
+                customer_name,
+                customer_company,
+                str(round(overall_avg, 2)),
+                json.dumps(scores),
+                json.dumps(comments),
+                "customer"
+            ])
+        else:
+            st.error("Could not connect to Google Sheet. Check service_account.json and Sheet ID.")
     except Exception as e:
         st.error(f"Could not save response: {e}")
     return response
@@ -296,6 +345,7 @@ def main():
             st.rerun()
 
     st.markdown('<p style="text-align:center; color:#9CA3AF; font-size:0.78rem; margin-top:16px;">Your responses are confidential and will be used to improve supplier performance.</p>', unsafe_allow_html=True)
+    st.markdown('<p style="text-align:center; color:#9CA3AF; font-size:0.72rem; margin-top:4px;">© 2026 Louis T. Filiano, MBA — All Rights Reserved</p>', unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
